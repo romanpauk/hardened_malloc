@@ -1,0 +1,467 @@
+TOOLCHAIN ?= mingw
+ARCH ?= x64
+VARIANT := default
+
+ifeq (,$(filter $(TOOLCHAIN),mingw msvc))
+    $(error TOOLCHAIN must be mingw or msvc)
+endif
+ifeq (,$(filter $(ARCH),x64 arm64))
+    $(error ARCH must be x64 or arm64)
+endif
+ifeq ($(TOOLCHAIN)-$(ARCH),mingw-arm64)
+    $(error TOOLCHAIN=mingw does not support ARCH=arm64; use TOOLCHAIN=msvc)
+endif
+
+ifneq ($(VARIANT),)
+    CONFIG_FILE := config/$(VARIANT).mk
+    include $(CONFIG_FILE)
+endif
+
+ifeq ($(VARIANT),default)
+    SUFFIX :=
+else
+    SUFFIX := -$(VARIANT)
+endif
+
+ifeq ($(ARCH),x64)
+    ARCH_SUFFIX :=
+else
+    ARCH_SUFFIX := -$(ARCH)
+endif
+
+SOURCES := chacha.c h_malloc.c pages.c random.c
+WINDOWS_EXPORTS := windows_exports.def
+WINDOWS_MSVC_EXPORTS := windows_exports_msvc.def
+UPSTREAM_TEST_NAMES := \
+    aligned_sized_delete_small_min_align \
+    calloc_overflow \
+    calloc_zeroed \
+    double_free_large \
+    double_free_large_delayed \
+    double_free_small \
+    double_free_small_delayed \
+    free_sized_large \
+    free_sized_small \
+    impossibly_large_malloc \
+    invalid_free_small_region \
+    invalid_free_small_region_far \
+    invalid_malloc_object_size_small \
+    invalid_malloc_object_size_small_quarantine \
+    invalid_malloc_usable_size_small \
+    invalid_malloc_usable_size_small_quarantine \
+    large_array_growth \
+    malloc_noreuse \
+    malloc_object_size \
+    malloc_object_size_offset \
+    malloc_object_size_zero \
+    malloc_zero_different \
+    overflow_large_1_byte \
+    overflow_large_8_byte \
+    overflow_small_1_byte \
+    overflow_small_8_byte \
+    read_after_free_large \
+    read_after_free_small \
+    read_zero_size \
+    string_overflow \
+    unaligned_free_large \
+    unaligned_free_small \
+    unaligned_malloc_usable_size_small \
+    uninitialized_free \
+    uninitialized_malloc_usable_size \
+    uninitialized_read_large \
+    uninitialized_read_small \
+    uninitialized_realloc \
+    write_after_free_large \
+    write_after_free_large_reuse \
+    write_after_free_small \
+    write_after_free_small_reuse \
+    write_zero_size
+UPSTREAM_CXX_TEST_NAMES := \
+    aligned_sized_delete_large \
+    aligned_sized_delete_small \
+    delete_type_size_mismatch \
+    invalid_aligned_sized_delete_large \
+    invalid_aligned_sized_delete_small
+
+ifeq (,$(filter $(CONFIG_SEAL_METADATA),true false))
+    $(error CONFIG_SEAL_METADATA must be true or false)
+endif
+ifeq (,$(filter $(CONFIG_ZERO_ON_FREE),true false))
+    $(error CONFIG_ZERO_ON_FREE must be true or false)
+endif
+ifeq (,$(filter $(CONFIG_WRITE_AFTER_FREE_CHECK),true false))
+    $(error CONFIG_WRITE_AFTER_FREE_CHECK must be true or false)
+endif
+ifeq (,$(filter $(CONFIG_SLOT_RANDOMIZE),true false))
+    $(error CONFIG_SLOT_RANDOMIZE must be true or false)
+endif
+ifeq (,$(filter $(CONFIG_SLAB_CANARY),true false))
+    $(error CONFIG_SLAB_CANARY must be true or false)
+endif
+ifeq (,$(filter $(CONFIG_EXTENDED_SIZE_CLASSES),true false))
+    $(error CONFIG_EXTENDED_SIZE_CLASSES must be true or false)
+endif
+ifeq (,$(filter $(CONFIG_LARGE_SIZE_CLASSES),true false))
+    $(error CONFIG_LARGE_SIZE_CLASSES must be true or false)
+endif
+ifeq (,$(filter $(CONFIG_STATS),true false))
+    $(error CONFIG_STATS must be true or false)
+endif
+ifeq (,$(filter $(CONFIG_SELF_INIT),true false))
+    $(error CONFIG_SELF_INIT must be true or false)
+endif
+ifeq (,$(filter $(CONFIG_LABEL_MEMORY),true false))
+    $(error CONFIG_LABEL_MEMORY must be true or false)
+endif
+
+CONFIG_DEFINES := \
+    CONFIG_SEAL_METADATA=$(CONFIG_SEAL_METADATA) \
+    ZERO_ON_FREE=$(CONFIG_ZERO_ON_FREE) \
+    WRITE_AFTER_FREE_CHECK=$(CONFIG_WRITE_AFTER_FREE_CHECK) \
+    SLOT_RANDOMIZE=$(CONFIG_SLOT_RANDOMIZE) \
+    SLAB_CANARY=$(CONFIG_SLAB_CANARY) \
+    SLAB_QUARANTINE_RANDOM_LENGTH=$(CONFIG_SLAB_QUARANTINE_RANDOM_LENGTH) \
+    SLAB_QUARANTINE_QUEUE_LENGTH=$(CONFIG_SLAB_QUARANTINE_QUEUE_LENGTH) \
+    CONFIG_EXTENDED_SIZE_CLASSES=$(CONFIG_EXTENDED_SIZE_CLASSES) \
+    CONFIG_LARGE_SIZE_CLASSES=$(CONFIG_LARGE_SIZE_CLASSES) \
+    GUARD_SLABS_INTERVAL=$(CONFIG_GUARD_SLABS_INTERVAL) \
+    GUARD_SIZE_DIVISOR=$(CONFIG_GUARD_SIZE_DIVISOR) \
+    REGION_QUARANTINE_RANDOM_LENGTH=$(CONFIG_REGION_QUARANTINE_RANDOM_LENGTH) \
+    REGION_QUARANTINE_QUEUE_LENGTH=$(CONFIG_REGION_QUARANTINE_QUEUE_LENGTH) \
+    REGION_QUARANTINE_SKIP_THRESHOLD=$(CONFIG_REGION_QUARANTINE_SKIP_THRESHOLD) \
+    FREE_SLABS_QUARANTINE_RANDOM_LENGTH=$(CONFIG_FREE_SLABS_QUARANTINE_RANDOM_LENGTH) \
+    CONFIG_CLASS_REGION_SIZE=$(CONFIG_CLASS_REGION_SIZE) \
+    N_ARENA=$(CONFIG_N_ARENA) \
+    CONFIG_STATS=$(CONFIG_STATS) \
+    CONFIG_SELF_INIT=$(CONFIG_SELF_INIT) \
+    CONFIG_LABEL_MEMORY=$(CONFIG_LABEL_MEMORY)
+
+ifeq ($(TOOLCHAIN),mingw)
+    OUT := out/windows$(SUFFIX)
+    OBJECT_EXTENSION := o
+
+    CC_IS_CLANG := $(filter 1,$(shell printf '__clang__\n' | $(CC) -E -P -x c - 2>/dev/null))
+
+    define safe_flag
+    $(shell $(CC) $(if $(CC_IS_CLANG),-Werror=unknown-warning-option) -E $1 - </dev/null >/dev/null 2>&1 && echo $1 || echo $2)
+    endef
+
+    CPPFLAGS += -DH_MALLOC_PREFIX -I. -I include $(addprefix -D,$(CONFIG_DEFINES))
+    SHARED_FLAGS := -pipe -O3 -fstack-protector-strong -Wall -Wextra \
+        $(call safe_flag,-Wcast-align=strict,-Wcast-align) -Wcast-qual -Wwrite-strings -Wundef
+
+    ifeq ($(CONFIG_WERROR),true)
+        SHARED_FLAGS += -Werror
+    endif
+    ifeq ($(CONFIG_UBSAN),true)
+        SHARED_FLAGS += -fsanitize=undefined -fno-sanitize-recover=undefined
+    endif
+
+    CFLAGS += -std=c23 $(SHARED_FLAGS) -Wmissing-prototypes -Wstrict-prototypes
+    LDFLAGS += -static-libgcc
+    LDLIBS += -lbcrypt
+
+    LIBRARY := $(OUT)/hardened_malloc$(SUFFIX).dll
+    IMPORT_LIBRARY := $(OUT)/libhardened_malloc$(SUFFIX).dll.a
+    WIN_OBJECT := $(OUT)/win.o
+    TESTING_WIN := $(OUT)/win_testing$(SUFFIX).o
+    VM_WIN_OBJECT := $(OUT)/win_vm$(SUFFIX).o
+    TESTING_LIBRARY := $(OUT)/hardened_malloc$(SUFFIX)_testing.dll
+    TESTING_IMPORT_LIBRARY := $(OUT)/libhardened_malloc$(SUFFIX)_testing.dll.a
+    VM_TEST := $(OUT)/windows-vm-test$(SUFFIX).exe
+    SMOKE_TEST := $(OUT)/windows-smoke$(SUFFIX).exe
+    FAULT_TEST := $(OUT)/windows-fault-test$(SUFFIX).exe
+    TESTING_TEST := $(OUT)/windows-testing-test$(SUFFIX).exe
+    OBJDUMP ?= $(shell $(CC) -print-prog-name=objdump)
+    PYTHON ?= python3
+    ifeq ($(origin CXX),default)
+        CXX := $(patsubst %gcc,%g++,$(CC))
+    endif
+    CXXFLAGS := -std=c++17 -O3 -fsized-deallocation -fstack-protector-strong -Wall -Wextra
+    ifeq ($(CONFIG_WERROR),true)
+        CXXFLAGS += -Werror
+    endif
+    CXX_OBJECT := $(OUT)/new.o
+    MINGW_CXX_BINDIR := $(dir $(shell command -v $(firstword $(CXX)) 2>/dev/null))
+    MINGW_CXX_SYSROOT := $(shell $(CXX) -print-sysroot 2>/dev/null)
+    MINGW_LIBSTDCXX := $(firstword $(wildcard \
+        $(shell $(CXX) -print-file-name=libstdc++-6.dll 2>/dev/null) \
+        $(MINGW_CXX_BINDIR)libstdc++-6.dll \
+        $(MINGW_CXX_SYSROOT)/mingw/bin/libstdc++-6.dll \
+        $(MINGW_CXX_SYSROOT)/bin/libstdc++-6.dll))
+    MINGW_LIBGCC := $(firstword $(wildcard \
+        $(shell $(CXX) -print-file-name=libgcc_s_seh-1.dll 2>/dev/null) \
+        $(MINGW_CXX_BINDIR)libgcc_s_seh-1.dll \
+        $(MINGW_CXX_SYSROOT)/mingw/bin/libgcc_s_seh-1.dll \
+        $(MINGW_CXX_SYSROOT)/bin/libgcc_s_seh-1.dll))
+    MINGW_WINPTHREAD := $(firstword $(wildcard \
+        $(shell $(CXX) -print-file-name=libwinpthread-1.dll 2>/dev/null) \
+        $(MINGW_CXX_BINDIR)libwinpthread-1.dll \
+        $(MINGW_CXX_SYSROOT)/mingw/bin/libwinpthread-1.dll \
+        $(MINGW_CXX_SYSROOT)/bin/libwinpthread-1.dll))
+
+    # MinGW reports a false maybe-uninitialized diagnostic for ChaCha's partial-block pointer.
+    # Keep that toolchain diagnostic out of the unchanged common source.
+    CHACHA_WARNING_FLAGS := $(call safe_flag,-Wno-error=maybe-uninitialized,)
+else
+    OUT := out/windows-msvc$(ARCH_SUFFIX)$(SUFFIX)
+    OBJECT_EXTENSION := obj
+    CC := cl.exe
+    PYTHON := python.exe
+    DUMPBIN ?= dumpbin.exe
+    CXX := $(CC)
+
+    # MSYS2 treats leading slashes as paths. Suppress its argument conversion only while
+    # invoking native MSVC tools so options such as /std:c17 remain unchanged.
+    MSVC_CC := MSYS2_ARG_CONV_EXCL='*' $(CC)
+    CPPFLAGS += /DH_MALLOC_PREFIX /Iinclude /I. $(addprefix /D,$(CONFIG_DEFINES))
+    MSVC_LIBRARY_CPPFLAGS := $(CPPFLAGS) /DH_MALLOC_MSVC_DEF_EXPORTS
+    # Retain /WX while excluding diagnostics for intentional unsigned wraparound and narrowing.
+    # C4334 is disabled to keep the upstream quarantine shift expressions unchanged.
+    CFLAGS += /nologo /std:c17 /O2 /GS /W3 /MD /utf-8 /wd4146 /wd4244 /wd4267 /wd4334 \
+        /D_CRT_SECURE_NO_WARNINGS
+
+    ifeq ($(CONFIG_WERROR),true)
+        CFLAGS += /WX
+    endif
+
+    LIBRARY := $(OUT)/hardened_malloc-msvc$(ARCH_SUFFIX)$(SUFFIX).dll
+    IMPORT_LIBRARY := $(OUT)/hardened_malloc-msvc$(ARCH_SUFFIX)$(SUFFIX).lib
+    WIN_OBJECT := $(OUT)/win.obj
+    TESTING_WIN := $(OUT)/win_testing.obj
+    VM_WIN_OBJECT := $(OUT)/win_vm.obj
+    TESTING_LIBRARY := $(OUT)/hardened_malloc-msvc$(ARCH_SUFFIX)$(SUFFIX)_testing.dll
+    TESTING_IMPORT_LIBRARY := $(OUT)/hardened_malloc-msvc$(ARCH_SUFFIX)$(SUFFIX)_testing.lib
+    VM_TEST := $(OUT)/windows-vm-test-msvc$(ARCH_SUFFIX)$(SUFFIX).exe
+    SMOKE_TEST := $(OUT)/windows-smoke-msvc$(ARCH_SUFFIX)$(SUFFIX).exe
+    FAULT_TEST := $(OUT)/windows-fault-test-msvc$(ARCH_SUFFIX)$(SUFFIX).exe
+    TESTING_TEST := $(OUT)/windows-testing-test-msvc$(ARCH_SUFFIX)$(SUFFIX).exe
+    VM_TEST_OBJECT := $(OUT)/windows_vm_test.obj
+    SMOKE_TEST_OBJECT := $(OUT)/windows_smoke_test.obj
+    FAULT_TEST_OBJECT := $(OUT)/windows_fault_test.obj
+    TESTING_TEST_OBJECT := $(OUT)/windows_testing_test.obj
+    TEST_OBJECTS := $(VM_TEST_OBJECT) $(SMOKE_TEST_OBJECT) $(FAULT_TEST_OBJECT) $(TESTING_TEST_OBJECT)
+    ifeq ($(ARCH),x64)
+        MSVC_MACHINE := X64
+    else
+        MSVC_MACHINE := ARM64
+    endif
+    LINK_FLAGS := /INCREMENTAL:NO /MACHINE:$(MSVC_MACHINE) /NXCOMPAT /DYNAMICBASE /HIGHENTROPYVA
+    CXX_OBJECT := $(OUT)/new.obj
+endif
+
+.DEFAULT_GOAL := $(LIBRARY)
+
+OBJECTS := $(patsubst %.c,$(OUT)/%.$(OBJECT_EXTENSION),$(SOURCES))
+LIBRARY_OBJECTS := $(OBJECTS) $(WIN_OBJECT) $(CXX_OBJECT)
+TESTING_OBJECTS := $(filter-out $(WIN_OBJECT),$(LIBRARY_OBJECTS)) $(TESTING_WIN)
+UPSTREAM_OUT := $(OUT)/upstream-tests
+UPSTREAM_RUNTIME_LIBRARY := $(UPSTREAM_OUT)/$(notdir $(LIBRARY))
+UPSTREAM_C_TESTS := $(addprefix $(UPSTREAM_OUT)/upstream-,$(addsuffix .exe,$(UPSTREAM_TEST_NAMES)))
+UPSTREAM_CXX_TESTS := $(addprefix $(UPSTREAM_OUT)/upstream-,\
+	$(addsuffix .exe,$(UPSTREAM_CXX_TEST_NAMES)))
+UPSTREAM_TESTS := $(UPSTREAM_C_TESTS) $(UPSTREAM_CXX_TESTS)
+UPSTREAM_TEST_OBJECTS := $(addprefix $(OUT)/upstream_,$(addsuffix .obj,$(UPSTREAM_TEST_NAMES)))
+UPSTREAM_CXX_TEST_OBJECTS := $(addprefix $(OUT)/upstream_,\
+	$(addsuffix .obj,$(UPSTREAM_CXX_TEST_NAMES)))
+
+$(OUT):
+	mkdir -p $(OUT)
+
+$(UPSTREAM_OUT): | $(OUT)
+	mkdir -p $(UPSTREAM_OUT)
+
+$(UPSTREAM_RUNTIME_LIBRARY): $(LIBRARY) | $(UPSTREAM_OUT)
+	cp $< $@
+
+ifeq ($(TOOLCHAIN),mingw)
+$(OUT)/chacha.o: CFLAGS += $(CHACHA_WARNING_FLAGS)
+
+$(OUT)/%.o: %.c $(CONFIG_FILE) | $(OUT)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+else
+$(OUT)/%.obj: %.c $(CONFIG_FILE) | $(OUT)
+	$(MSVC_CC) $(MSVC_LIBRARY_CPPFLAGS) $(CFLAGS) /c $< /Fo$@
+endif
+
+$(OUT)/chacha.$(OBJECT_EXTENSION): chacha.c chacha.h util.h
+$(OUT)/h_malloc.$(OBJECT_EXTENSION): h_malloc.c include/h_malloc.h mutex.h memory.h pages.h random.h \
+	util.h win.h
+$(OUT)/pages.$(OBJECT_EXTENSION): pages.c pages.h memory.h util.h
+$(OUT)/random.$(OBJECT_EXTENSION): random.c random.h chacha.h util.h
+
+ifeq ($(TOOLCHAIN),mingw)
+$(CXX_OBJECT): new.cc include/h_malloc.h util.h $(CONFIG_FILE) | $(OUT)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
+
+$(WIN_OBJECT): win.c win.h include/h_malloc.h memory.h random.h util.h $(CONFIG_FILE) | $(OUT)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+
+$(LIBRARY): $(LIBRARY_OBJECTS) $(WINDOWS_EXPORTS) | $(OUT)
+	$(CXX) -shared $^ $(LDLIBS) \
+		-Wl,--out-implib,$(IMPORT_LIBRARY),--nxcompat,--dynamicbase,--high-entropy-va -o $@
+
+$(TESTING_WIN): win.c win.h include/h_malloc.h memory.h random.h util.h $(CONFIG_FILE) | $(OUT)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -DH_MALLOC_WINDOWS_TEST_FAULT_INJECTION -c -o $@ $<
+
+$(VM_WIN_OBJECT): win.c win.h include/h_malloc.h memory.h random.h util.h $(CONFIG_FILE) | $(OUT)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -DH_MALLOC_WINDOWS_VM_TEST -c -o $@ $<
+
+$(TESTING_LIBRARY): $(TESTING_OBJECTS) $(WINDOWS_EXPORTS) | $(OUT)
+	$(CXX) -shared $^ $(LDLIBS) \
+		-Wl,--out-implib,$(TESTING_IMPORT_LIBRARY),--nxcompat,--dynamicbase,--high-entropy-va -o $@
+
+$(OUT)/libstdc++-6.dll: $(MINGW_LIBSTDCXX) | $(OUT)
+	cp $< $@
+
+$(OUT)/libgcc_s_seh-1.dll: $(MINGW_LIBGCC) | $(OUT)
+	cp $< $@
+
+$(OUT)/libwinpthread-1.dll: $(MINGW_WINPTHREAD) | $(OUT)
+	cp $< $@
+
+MINGW_RUNTIME_LIBRARIES := $(OUT)/libstdc++-6.dll $(OUT)/libgcc_s_seh-1.dll \
+	$(OUT)/libwinpthread-1.dll
+UPSTREAM_MINGW_RUNTIME_LIBRARIES := $(addprefix $(UPSTREAM_OUT)/,\
+	$(notdir $(MINGW_RUNTIME_LIBRARIES)))
+
+$(UPSTREAM_OUT)/%.dll: $(OUT)/%.dll | $(UPSTREAM_OUT)
+	cp $< $@
+
+$(VM_TEST): test/windows_vm.c $(VM_WIN_OBJECT)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -I. $(CPPFLAGS) \
+		$^ -static-libgcc -o $@
+
+$(SMOKE_TEST): test/windows_smoke.c include/h_malloc.h $(LIBRARY)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror $(CPPFLAGS) $< $(IMPORT_LIBRARY) \
+		-static-libgcc -o $@
+
+$(FAULT_TEST): test/windows_fault.c include/h_malloc.h $(LIBRARY)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror $(CPPFLAGS) $< $(IMPORT_LIBRARY) \
+		-static-libgcc -o $@
+
+$(TESTING_TEST): test/windows_fault.c include/h_malloc.h $(TESTING_LIBRARY)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror $(CPPFLAGS) \
+		-DH_MALLOC_WINDOWS_TEST_FAULT_INJECTION $< $(TESTING_IMPORT_LIBRARY) -static-libgcc -o $@
+
+$(UPSTREAM_OUT)/upstream-%.exe: test/%.c test/windows_upstream_adapter.h $(LIBRARY) \
+		$(UPSTREAM_RUNTIME_LIBRARY) $(UPSTREAM_MINGW_RUNTIME_LIBRARIES) | $(UPSTREAM_OUT)
+	$(CC) -std=c23 -O3 $(CPPFLAGS) -include test/windows_upstream_adapter.h $< \
+		$(IMPORT_LIBRARY) -static-libgcc -o $@
+
+$(UPSTREAM_CXX_TESTS): $(UPSTREAM_OUT)/upstream-%.exe: test/%.cc $(LIBRARY) \
+		$(UPSTREAM_RUNTIME_LIBRARY) $(UPSTREAM_MINGW_RUNTIME_LIBRARIES) | $(UPSTREAM_OUT)
+	$(CXX) -std=c++17 -O3 -fsized-deallocation $< $(IMPORT_LIBRARY) -o $@
+else
+$(CXX_OBJECT): new.cc include/h_malloc.h util.h win.h $(CONFIG_FILE) | $(OUT)
+	$(MSVC_CC) $(CPPFLAGS) /DH_MALLOC_MSVC_DEF_EXPORTS \
+		/nologo /TP /std:c++17 /EHsc /O2 /GS /MD /utf-8 /W3 \
+		$(if $(filter true,$(CONFIG_WERROR)),/WX) /c $< /Fo$@
+
+$(WIN_OBJECT): win.c win.h include/h_malloc.h memory.h random.h util.h $(CONFIG_FILE) | $(OUT)
+	$(MSVC_CC) $(MSVC_LIBRARY_CPPFLAGS) $(CFLAGS) /c $< /Fo$@
+
+$(LIBRARY): $(LIBRARY_OBJECTS) $(WINDOWS_MSVC_EXPORTS) | $(OUT)
+	$(MSVC_CC) /nologo /LD $(LIBRARY_OBJECTS) bcrypt.lib /link $(LINK_FLAGS) \
+		/DEF:$(WINDOWS_MSVC_EXPORTS) /OUT:$@ /IMPLIB:$(IMPORT_LIBRARY)
+
+$(TESTING_WIN): win.c win.h include/h_malloc.h memory.h random.h util.h $(CONFIG_FILE) | $(OUT)
+	$(MSVC_CC) $(MSVC_LIBRARY_CPPFLAGS) $(CFLAGS) /DH_MALLOC_WINDOWS_TEST_FAULT_INJECTION \
+		/c $< /Fo$@
+
+$(VM_WIN_OBJECT): win.c win.h include/h_malloc.h memory.h random.h util.h $(CONFIG_FILE) | $(OUT)
+	$(MSVC_CC) $(MSVC_LIBRARY_CPPFLAGS) $(CFLAGS) /DH_MALLOC_WINDOWS_VM_TEST \
+		/c $< /Fo$@
+
+$(TESTING_LIBRARY): $(TESTING_OBJECTS) $(WINDOWS_MSVC_EXPORTS) | $(OUT)
+	$(MSVC_CC) /nologo /LD $(TESTING_OBJECTS) bcrypt.lib /link $(LINK_FLAGS) \
+		/DEF:$(WINDOWS_MSVC_EXPORTS) /EXPORT:h_malloc_test_fail_reserve \
+		/EXPORT:h_malloc_test_fail_commit /EXPORT:h_malloc_test_fail_metadata_commit \
+		/OUT:$@ /IMPLIB:$(TESTING_IMPORT_LIBRARY)
+
+$(VM_TEST): test/windows_vm.c $(VM_WIN_OBJECT) | $(OUT)
+	$(MSVC_CC) $(CPPFLAGS) $(CFLAGS) $^ \
+		/Fo$(VM_TEST_OBJECT) /Fe$@ /link $(LINK_FLAGS)
+
+$(SMOKE_TEST): test/windows_smoke.c include/h_malloc.h $(LIBRARY) | $(OUT)
+	$(MSVC_CC) $(CPPFLAGS) $(CFLAGS) $< $(IMPORT_LIBRARY) /Fo$(SMOKE_TEST_OBJECT) /Fe$@ \
+		/link $(LINK_FLAGS)
+
+$(FAULT_TEST): test/windows_fault.c include/h_malloc.h $(LIBRARY) | $(OUT)
+	$(MSVC_CC) $(CPPFLAGS) $(CFLAGS) $< $(IMPORT_LIBRARY) /Fo$(FAULT_TEST_OBJECT) /Fe$@ \
+		/link $(LINK_FLAGS)
+
+$(TESTING_TEST): test/windows_fault.c include/h_malloc.h $(TESTING_LIBRARY) | $(OUT)
+	$(MSVC_CC) $(CPPFLAGS) $(CFLAGS) /DH_MALLOC_WINDOWS_TEST_FAULT_INJECTION $< \
+		$(TESTING_IMPORT_LIBRARY) /Fo$(TESTING_TEST_OBJECT) /Fe$@ /link $(LINK_FLAGS)
+
+$(UPSTREAM_OUT)/upstream-%.exe: test/%.c test/windows_upstream_adapter.h $(LIBRARY) \
+		$(UPSTREAM_RUNTIME_LIBRARY) | $(UPSTREAM_OUT)
+	$(MSVC_CC) $(CPPFLAGS) /nologo /std:c17 /Od /GS /MD /utf-8 /wd4068 \
+		/FItest/windows_upstream_adapter.h $< $(IMPORT_LIBRARY) /Fo$(OUT)/upstream_$*.obj \
+		/Fe$@ /link $(LINK_FLAGS)
+
+$(UPSTREAM_CXX_TESTS): $(UPSTREAM_OUT)/upstream-%.exe: test/%.cc $(LIBRARY) \
+		$(UPSTREAM_RUNTIME_LIBRARY) | $(UPSTREAM_OUT)
+	$(MSVC_CC) $(CPPFLAGS) /nologo /std:c++17 /EHsc /Od /GS /MD /utf-8 /wd4068 \
+		/FItest/windows_upstream_adapter.h $< $(IMPORT_LIBRARY) \
+		/Fo$(OUT)/upstream_$*.obj /Fe$@ /link $(LINK_FLAGS)
+endif
+
+TEST_ARTIFACTS := $(LIBRARY) $(TESTING_LIBRARY) $(VM_TEST) $(SMOKE_TEST) $(FAULT_TEST) \
+	$(TESTING_TEST)
+ifeq ($(TOOLCHAIN),mingw)
+TEST_ARTIFACTS += $(MINGW_RUNTIME_LIBRARIES)
+endif
+ifeq ($(VARIANT),default)
+TEST_ARTIFACTS += $(UPSTREAM_TESTS)
+endif
+
+ifeq ($(TOOLCHAIN),mingw)
+check: tidy
+
+tidy:
+	clang-tidy --extra-arg=-std=c23 $(SOURCES) -- $(CPPFLAGS)
+	clang-tidy --extra-arg=-std=c23 win.c -- $(CPPFLAGS)
+endif
+
+clean:
+	rm -f $(LIBRARY) $(IMPORT_LIBRARY) $(WIN_OBJECT) $(TESTING_WIN) $(VM_WIN_OBJECT) $(TESTING_LIBRARY) \
+		$(TESTING_IMPORT_LIBRARY) $(VM_TEST) $(SMOKE_TEST) $(FAULT_TEST) $(TESTING_TEST) $(OBJECTS) \
+		$(TEST_OBJECTS) $(UPSTREAM_TESTS) $(UPSTREAM_TEST_OBJECTS) $(UPSTREAM_CXX_TEST_OBJECTS) \
+		$(UPSTREAM_RUNTIME_LIBRARY) $(MINGW_RUNTIME_LIBRARIES) $(UPSTREAM_MINGW_RUNTIME_LIBRARIES) \
+		$(CXX_OBJECT)
+
+test: $(TEST_ARTIFACTS)
+ifeq ($(TOOLCHAIN),mingw)
+	$(PYTHON) test/windows_pe.py --objdump $(OBJDUMP) --library $(LIBRARY) \
+		--import-library $(IMPORT_LIBRARY) --testing-library $(TESTING_LIBRARY) \
+		--testing-import-library $(TESTING_IMPORT_LIBRARY) --vm-test $(VM_TEST) --smoke-test $(SMOKE_TEST) \
+		--fault-test $(FAULT_TEST) --testing-test $(TESTING_TEST)
+	@set -e; if [ "$${OS:-}" = Windows_NT ] || \
+		{ [ -r /proc/sys/kernel/osrelease ] && grep -qi microsoft /proc/sys/kernel/osrelease; }; then \
+		cd $(OUT) && ./$(notdir $(VM_TEST)) && ./$(notdir $(FAULT_TEST)) && \
+			./$(notdir $(TESTING_TEST)) && ./$(notdir $(SMOKE_TEST)); \
+		if [ "$(VARIANT)" = default ]; then \
+			cd $(CURDIR) && $(PYTHON) test/windows_upstream.py --directory $(UPSTREAM_OUT) \
+				$(UPSTREAM_TEST_NAMES) $(UPSTREAM_CXX_TEST_NAMES); \
+		fi; \
+	else \
+		echo "built and audited Windows tests; execution requires Windows or WSL interoperability"; \
+	fi
+else
+	$(PYTHON) test/windows_pe_msvc.py --arch $(ARCH) --dumpbin $(DUMPBIN) --library $(LIBRARY) \
+		--import-library $(IMPORT_LIBRARY) --testing-library $(TESTING_LIBRARY) \
+		--testing-import-library $(TESTING_IMPORT_LIBRARY) --vm-test $(VM_TEST) --smoke-test $(SMOKE_TEST) \
+		--fault-test $(FAULT_TEST) --testing-test $(TESTING_TEST)
+	cd $(OUT) && ./$(notdir $(VM_TEST))
+	cd $(OUT) && ./$(notdir $(FAULT_TEST))
+	cd $(OUT) && ./$(notdir $(TESTING_TEST))
+	cd $(OUT) && ./$(notdir $(SMOKE_TEST))
+ifeq ($(VARIANT),default)
+	$(PYTHON) test/windows_upstream.py --directory $(UPSTREAM_OUT) $(UPSTREAM_TEST_NAMES) \
+		$(UPSTREAM_CXX_TEST_NAMES)
+endif
+endif
+
+.PHONY: check clean test tidy

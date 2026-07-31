@@ -1,0 +1,39 @@
+EXPORTS
+    h_aligned_alloc
+    h_calloc
+    h_cfree
+    h_free
+    h_free_aligned_sized
+    h_free_sized
+    h_malloc
+    h_malloc_object_size
+    h_malloc_object_size_fast
+    h_malloc_stats
+    h_malloc_trim
+    h_malloc_usable_size
+    h_mallopt
+    h_memalign
+    h_posix_memalign
+    h_pvalloc
+    h_realloc
+    h_reallocarray
+    h_valloc
+    aligned_alloc = h_aligned_alloc PRIVATE
+    calloc = h_calloc PRIVATE
+    cfree = h_cfree PRIVATE
+    free = h_free PRIVATE
+    free_aligned_sized = h_free_aligned_sized PRIVATE
+    free_sized = h_free_sized PRIVATE
+    malloc = h_malloc PRIVATE
+    malloc_object_size = h_malloc_object_size PRIVATE
+    malloc_object_size_fast = h_malloc_object_size_fast PRIVATE
+    malloc_stats = h_malloc_stats PRIVATE
+    malloc_trim = h_malloc_trim PRIVATE
+    malloc_usable_size = h_malloc_usable_size PRIVATE
+    mallopt = h_mallopt PRIVATE
+    memalign = h_memalign PRIVATE
+    posix_memalign = h_posix_memalign PRIVATE
+    pvalloc = h_pvalloc PRIVATE
+    realloc = h_realloc PRIVATE
+    reallocarray = h_reallocarray PRIVATE
+    valloc = h_valloc PRIVATE

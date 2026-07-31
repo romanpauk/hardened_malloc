@@ -10,6 +10,14 @@
 #include "h_malloc.h"
 #include "util.h"
 
+COLD static void throw_bad_alloc() {
+#if defined(_MSC_VER)
+    throw std::bad_alloc();
+#else
+    std::__throw_bad_alloc();
+#endif
+}
+
 COLD static void *handle_out_of_memory(size_t size, bool nothrow) {
     void *ptr = nullptr;
 
@@ -32,7 +40,7 @@ COLD static void *handle_out_of_memory(size_t size, bool nothrow) {
     } while (ptr == nullptr);
 
     if (ptr == nullptr && !nothrow) {
-        std::__throw_bad_alloc();
+        throw_bad_alloc();
     }
     return ptr;
 }
@@ -107,7 +115,7 @@ COLD static void *handle_out_of_memory(size_t size, size_t alignment, bool nothr
     } while (ptr == nullptr);
 
     if (ptr == nullptr && !nothrow) {
-        std::__throw_bad_alloc();
+        throw_bad_alloc();
     }
     return ptr;
 }

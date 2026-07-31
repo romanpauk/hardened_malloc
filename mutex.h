@@ -1,9 +1,12 @@
 #ifndef MUTEX_H
 #define MUTEX_H
 
-#include <pthread.h>
-
 #include "util.h"
+
+#ifdef _WIN32
+#include "win.h"
+#else
+#include <pthread.h>
 
 struct mutex {
     pthread_mutex_t lock;
@@ -24,5 +27,6 @@ static inline void mutex_lock(struct mutex *m) {
 static inline void mutex_unlock(struct mutex *m) {
     pthread_mutex_unlock(&m->lock);
 }
+#endif
 
 #endif

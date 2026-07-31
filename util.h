@@ -5,14 +5,23 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#if defined(_MSC_VER)
+#include "win.h"
+#endif
+
 // C11 noreturn doesn't work in C++
+#if defined(_MSC_VER)
+#define noreturn __declspec(noreturn)
+#else
 #define noreturn __attribute__((noreturn))
+#endif
 
 #define likely(x) __builtin_expect(!!(x), 1)
 #define likely51(x) __builtin_expect_with_probability(!!(x), 1, 0.51)
 #define unlikely(x) __builtin_expect(!!(x), 0)
 #define unlikely51(x) __builtin_expect_with_probability(!!(x), 0, 0.51)
 
+#if !defined(_MSC_VER)
 #define min(x, y) ({ \
     __typeof__(x) _x = (x); \
     __typeof__(y) _y = (y); \
@@ -24,10 +33,18 @@
     __typeof__(y) _y = (y); \
     (void) (&_x == &_y); \
     _x > _y ? _x : _y; })
+#endif
 
 #define COLD __attribute__((cold))
 #define UNUSED __attribute__((unused))
+
+#if defined(_MSC_VER) && defined(H_MALLOC_MSVC_DEF_EXPORTS)
+#define EXPORT
+#elif defined(_WIN32)
+#define EXPORT __declspec(dllexport)
+#else
 #define EXPORT __attribute__((visibility("default")))
+#endif
 
 #define STRINGIFY(s) #s
 #define ALIAS(f) __attribute__((alias(STRINGIFY(f))))
@@ -43,7 +60,9 @@ typedef uint8_t u8;
 typedef uint16_t u16;
 typedef uint32_t u32;
 typedef uint64_t u64;
+#if !defined(_MSC_VER)
 typedef unsigned __int128 u128;
+#endif
 
 #define U64_WIDTH 64
 

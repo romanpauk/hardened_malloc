@@ -1,0 +1,74 @@
+name: Build and run tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-gcc-x64:
+    runs-on: windows-latest
+    steps:
+      - name: Preserve repository line endings
+        shell: pwsh
+        run: git config --global core.autocrlf input
+      - uses: actions/checkout@v7
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            make
+            python
+            mingw-w64-x86_64-binutils
+            mingw-w64-x86_64-gcc
+      - name: Build and run Windows tests
+        shell: msys2 {0}
+        run: |
+          make -f Makefile.windows TOOLCHAIN=mingw CC=gcc VARIANT=default test
+          make -f Makefile.windows TOOLCHAIN=mingw CC=gcc VARIANT=light test
+
+  build-windows-msvc:
+    name: build-windows-msvc-${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2022
+            component: Microsoft.VisualStudio.Component.VC.Tools.x86.x64
+            vcvars_arch: amd64
+          - arch: arm64
+            runner: windows-11-arm
+            component: Microsoft.VisualStudio.Component.VC.Tools.ARM64
+            vcvars_arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - name: Preserve repository line endings
+        shell: pwsh
+        run: git config --global core.autocrlf input
+      - uses: actions/checkout@v7
+      - uses: msys2/setup-msys2@v2
+        id: msys2_msvc
+        with:
+          msystem: MSYS
+          update: true
+          install: make
+      - name: Build and run Windows tests
+        shell: cmd
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2_msvc.outputs.msys2-location }}
+          HMALLOC_ARCH: ${{ matrix.arch }}
+          VC_COMPONENT: ${{ matrix.component }}
+          VCVARS_ARCH: ${{ matrix.vcvars_arch }}
+        run: |
+          for /f "usebackq tokens=*" %%i in (`vswhere.exe -latest -products * -requires %VC_COMPONENT% -property installationPath`) do set "VSINSTALL=%%i"
+          if not defined VSINSTALL exit /b 1
+          call "%VSINSTALL%\VC\Auxiliary\Build\vcvarsall.bat" %VCVARS_ARCH%
+          set "PATH=%PATH%;%MSYS2_LOCATION%\usr\bin"
+          "%MSYS2_LOCATION%\usr\bin\make.exe" -f Makefile.windows TOOLCHAIN=msvc ARCH=%HMALLOC_ARCH% VARIANT=default test
+          if errorlevel 1 exit /b 1
+          "%MSYS2_LOCATION%\usr\bin\make.exe" -f Makefile.windows TOOLCHAIN=msvc ARCH=%HMALLOC_ARCH% VARIANT=light test
