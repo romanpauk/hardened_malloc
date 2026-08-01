@@ -9,6 +9,7 @@
 * [OS integration](#os-integration)
     * [Android-based operating systems](#android-based-operating-systems)
     * [Traditional Linux-based operating systems](#traditional-linux-based-operating-systems)
+    * [Windows](#windows)
 * [Configuration](#configuration)
 * [Core design](#core-design)
 * [Security properties](#security-properties)
@@ -35,8 +36,8 @@ micro-benchmarks. It offers scalability via a configurable number of entirely
 independent arenas, with the internal locking within arenas further divided
 up per size class.
 
-This project currently supports Bionic (Android), musl and glibc. It may
-support other non-Linux operating systems in the future. For Android, there's
+This project currently supports Bionic (Android), musl and glibc. It also
+supports 64-bit Windows as a standalone allocator DLL. For Android, there's
 custom integration and other hardening features which is also planned for musl
 in the future. The glibc support will be limited to replacing the malloc
 implementation because musl is a much more robust and cleaner base to build on
@@ -73,6 +74,10 @@ supported dependencies:
 * Clang 19.1.7 or GCC 14.2.0
 
 For Android, the Linux GKI 6.1, 6.6 and 6.12 branches are supported.
+
+The Windows build supports MinGW-w64 on x86_64 and MSVC on x86_64 and ARM64.
+MinGW-w64 is the primary development toolchain. Both builds use GNU Make and
+require a 4k native page size.
 
 However, using more recent releases is highly recommended. Older versions of
 the dependencies may be compatible at the moment but are not tested and will
@@ -114,6 +119,23 @@ A collection of simple, automated tests are provided and can be run with the
 make command as follows:
 
     make test
+
+The Windows build uses a separate makefile while retaining the same aggregate
+`test` target. From WSL with Windows interoperability enabled, MinGW-w64 tests
+are cross-compiled and executed directly:
+
+    make -f Makefile.windows TOOLCHAIN=mingw CC=x86_64-w64-mingw32-gcc test
+
+MSVC x64 and ARM64 builds are run from matching Visual Studio developer
+environments with GNU Make available:
+
+    make -f Makefile.windows TOOLCHAIN=msvc ARCH=x64 test
+    make -f Makefile.windows TOOLCHAIN=msvc ARCH=arm64 test
+
+The default configuration runs the existing allocator tests through a forced
+include that maps their allocation calls to the prefixed Windows API. It also
+runs Windows VM, DLL API, failure-handling and PE contract tests. CI tests the
+default and light configurations with MinGW-w64 x64 and MSVC x64/ARM64.
 
 ## Compatibility
 
@@ -186,6 +208,15 @@ to use 4 level page tables for the full 48 bit address space instead of only
 having a 39 bit address space for the default hardened\_malloc configuration.
 It's possible to reduce the class region size substantially to make a 39 bit
 address space workable but the defaults won't work.
+
+### Windows
+
+The Windows build produces one allocator DLL containing the C allocation API
+and C++ replacement operators. It exports the stable prefixed `h_*` API and
+the corresponding unprefixed allocator names provided by the Linux library.
+Consumers should normally link the prefixed API explicitly rather than rely on
+process-wide interposition, which Windows does not provide in the ELF preload
+sense.
 
 ## Configuration
 
@@ -476,6 +507,7 @@ was a bit less important and if a core goal was finding latent bugs.
     * Errors other than ENOMEM from mmap, munmap, mprotect and mremap treated
       as fatal, which can help to detect memory management gone wrong elsewhere
       in the process.
+    * Unexpected Windows virtual-memory errors are also treated as fatal.
 * Memory tagging for slab allocations via MTE on ARMv8.5+
     * random memory tags as the baseline, providing probabilistic protection
       against various forms of memory corruption
@@ -725,6 +757,14 @@ it's in the quarantine, until it's eventually unmapped when it's pushed out of
 the quarantine. This means there are 2x as many system calls for allocating and
 freeing as there would be if the kernel supported these features directly.
 
+On Windows, each large allocation is one reservation containing uncommitted
+guard regions and a committed payload. Freeing decommits the payload while
+retaining the reservation in the quarantine; `MEM_RELEASE` is used only when
+the reservation leaves the quarantine. Shrinking a large allocation decommits
+its tail, and a later growth can recommit that retained capacity. Growth beyond
+the reservation capacity uses the required allocate-copy-free fallback.
+Windows does not emulate `mremap`.
+
 ## Memory tagging
 
 Random tags are set for all slab allocations when allocated, with 4 excluded values:
@@ -972,7 +1012,7 @@ element.
 This is intended to aid with creating system call whitelists via seccomp-bpf
 and will change over time.
 
-System calls used by all build configurations:
+Linux system calls used by all build configurations:
 
 * `futex(uaddr, FUTEX_WAIT_PRIVATE, val, NULL)` (via `pthread_mutex_lock`)
 * `futex(uaddr, FUTEX_WAKE_PRIVATE, val)` (via `pthread_mutex_unlock`)
@@ -1002,3 +1042,16 @@ Additional system calls when `CONFIG_SEAL_METADATA=true` is set:
 Additional system calls for Android builds with `LABEL_MEMORY`:
 
 * `prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, ptr, size, name)`
+
+The Windows build uses the following native interfaces instead of exposing or
+emulating the Linux system calls above:
+
+* `VirtualAlloc` with `MEM_RESERVE`, `MEM_COMMIT` and best-effort `MEM_RESET`
+* `VirtualProtect` with `PAGE_READONLY` and `PAGE_READWRITE`
+* `VirtualFree` with `MEM_DECOMMIT` and `MEM_RELEASE`
+* `VirtualQuery` to validate page state and recover the original reservation
+  base required by `MEM_RELEASE`
+* `BCryptGenRandom` to seed and regularly reseed the CSPRNG
+* SRW lock, one-time initialization and TLS APIs for synchronization and arena
+  selection
+* `WriteFile` and `RaiseFailFastException` for non-allocating fatal diagnostics

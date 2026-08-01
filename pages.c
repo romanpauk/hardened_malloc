@@ -57,7 +57,6 @@ void *allocate_pages_aligned(size_t usable_size, size_t alignment, size_t guard_
     void *usable = (char *)real + guard_size;
 
     size_t lead_size = align((uintptr_t)usable, alignment) - (uintptr_t)usable;
-    size_t trail_size = alloc_size - lead_size - usable_size;
     void *base = (char *)usable + lead_size;
 
     if (unlikely(memory_protect_rw(base, usable_size))) {
@@ -65,6 +64,8 @@ void *allocate_pages_aligned(size_t usable_size, size_t alignment, size_t guard_
         return NULL;
     }
 
+#ifndef _WIN32
+    size_t trail_size = alloc_size - lead_size - usable_size;
     if (lead_size) {
         if (unlikely(memory_unmap(real, lead_size))) {
             memory_unmap(real, real_alloc_size);
@@ -78,6 +79,7 @@ void *allocate_pages_aligned(size_t usable_size, size_t alignment, size_t guard_
             return NULL;
         }
     }
+#endif
 
     return base;
 }

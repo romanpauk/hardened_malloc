@@ -1,16 +1,24 @@
 #include <assert.h>
 #include <errno.h>
 #include <inttypes.h>
+#if !defined(_MSC_VER)
 #include <stdatomic.h>
+#endif
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef _WIN32
 #include <pthread.h>
 #include <unistd.h>
+#endif
 
 #include "third_party/libdivide.h"
+
+#ifdef _WIN32
+#include "win.h"
+#endif
 
 #include "h_malloc.h"
 #include "memory.h"
@@ -60,8 +68,10 @@ static_assert(N_ARENA <= 256, "maximum number of arenas is currently 256");
 #define CACHELINE_SIZE 64
 
 #if N_ARENA > 1
+#ifndef _WIN32
 __attribute__((tls_model("initial-exec")))
 static _Thread_local unsigned thread_arena = N_ARENA;
+#endif
 static atomic_uint thread_arena_counter = 0;
 #else
 static const unsigned thread_arena = 0;
@@ -148,12 +158,20 @@ static const size_t min_align = 16;
 static const size_t max_slab_size_class = 16384;
 #define MAX_SLAB_SIZE_CLASS_SHIFT 14
 // limit on the number of cached empty slabs before attempting purging instead
+#ifdef _MSC_VER
+static const size_t max_empty_slabs_total = ((size_t)1 << MAX_SLAB_SIZE_CLASS_SHIFT) * 4;
+#else
 static const size_t max_empty_slabs_total = max_slab_size_class * 4;
+#endif
 #else
 static const size_t max_slab_size_class = 131072;
 #define MAX_SLAB_SIZE_CLASS_SHIFT 17
 // limit on the number of cached empty slabs before attempting purging instead
+#ifdef _MSC_VER
+static const size_t max_empty_slabs_total = (size_t)1 << MAX_SLAB_SIZE_CLASS_SHIFT;
+#else
 static const size_t max_empty_slabs_total = max_slab_size_class;
+#endif
 #endif
 
 #if SLAB_QUARANTINE && CONFIG_EXTENDED_SIZE_CLASSES
@@ -369,7 +387,7 @@ static struct slab_metadata *alloc_metadata(struct size_class *c, size_t slab_si
 
 static void set_used_slot(struct slab_metadata *metadata, size_t index) {
     size_t bucket = index / U64_WIDTH;
-    metadata->bitmap[bucket] |= 1UL << (index - bucket * U64_WIDTH);
+    metadata->bitmap[bucket] |= 1ULL << (index - bucket * U64_WIDTH);
 #ifdef SLAB_METADATA_COUNT
     metadata->count++;
 #endif
@@ -377,7 +395,7 @@ static void set_used_slot(struct slab_metadata *metadata, size_t index) {
 
 static void clear_used_slot(struct slab_metadata *metadata, size_t index) {
     size_t bucket = index / U64_WIDTH;
-    metadata->bitmap[bucket] &= ~(1UL << (index - bucket * U64_WIDTH));
+    metadata->bitmap[bucket] &= ~(1ULL << (index - bucket * U64_WIDTH));
 #ifdef SLAB_METADATA_COUNT
     metadata->count--;
 #endif
@@ -385,28 +403,28 @@ static void clear_used_slot(struct slab_metadata *metadata, size_t index) {
 
 static bool is_used_slot(const struct slab_metadata *metadata, size_t index) {
     size_t bucket = index / U64_WIDTH;
-    return (metadata->bitmap[bucket] >> (index - bucket * U64_WIDTH)) & 1UL;
+    return (metadata->bitmap[bucket] >> (index - bucket * U64_WIDTH)) & 1ULL;
 }
 
 #if SLAB_QUARANTINE
 static void set_quarantine_slot(struct slab_metadata *metadata, size_t index) {
     size_t bucket = index / U64_WIDTH;
-    metadata->quarantine_bitmap[bucket] |= 1UL << (index - bucket * U64_WIDTH);
+    metadata->quarantine_bitmap[bucket] |= 1ULL << (index - bucket * U64_WIDTH);
 }
 
 static void clear_quarantine_slot(struct slab_metadata *metadata, size_t index) {
     size_t bucket = index / U64_WIDTH;
-    metadata->quarantine_bitmap[bucket] &= ~(1UL << (index - bucket * U64_WIDTH));
+    metadata->quarantine_bitmap[bucket] &= ~(1ULL << (index - bucket * U64_WIDTH));
 }
 
 static bool is_quarantine_slot(const struct slab_metadata *metadata, size_t index) {
     size_t bucket = index / U64_WIDTH;
-    return (metadata->quarantine_bitmap[bucket] >> (index - bucket * U64_WIDTH)) & 1UL;
+    return (metadata->quarantine_bitmap[bucket] >> (index - bucket * U64_WIDTH)) & 1ULL;
 }
 #endif
 
 static u64 get_mask(size_t slots) {
-    return slots < U64_WIDTH ? ~0UL << slots : 0;
+    return slots < U64_WIDTH ? ~0ULL << slots : 0;
 }
 
 static size_t get_free_slot(struct random_state *rng, size_t slots, const struct slab_metadata *metadata) {
@@ -414,7 +432,7 @@ static size_t get_free_slot(struct random_state *rng, size_t slots, const struct
         // randomize start location for linear search (uniform random choice is too slow)
         size_t random_index = get_random_u16_uniform(rng, slots);
         size_t first_bitmap = random_index / U64_WIDTH;
-        u64 random_split = ~(~0UL << (random_index - first_bitmap * U64_WIDTH));
+        u64 random_split = ~(~0ULL << (random_index - first_bitmap * U64_WIDTH));
 
         size_t i = first_bitmap;
         u64 masked = metadata->bitmap[i];
@@ -424,7 +442,7 @@ static size_t get_free_slot(struct random_state *rng, size_t slots, const struct
                 masked |= get_mask(slots - i * U64_WIDTH);
             }
 
-            if (masked != ~0UL) {
+            if (masked != ~0ULL) {
                 return ffz64(masked) - 1 + i * U64_WIDTH;
             }
 
@@ -438,7 +456,7 @@ static size_t get_free_slot(struct random_state *rng, size_t slots, const struct
                 masked |= get_mask(slots - i * U64_WIDTH);
             }
 
-            if (masked != ~0UL) {
+            if (masked != ~0ULL) {
                 return ffz64(masked) - 1 + i * U64_WIDTH;
             }
         }
@@ -453,18 +471,18 @@ static bool has_free_slots(size_t slots, const struct slab_metadata *metadata) {
 #else
     if (slots <= U64_WIDTH) {
         u64 masked = metadata->bitmap[0] | get_mask(slots);
-        return masked != ~0UL;
+        return masked != ~0ULL;
     }
     if (slots <= U64_WIDTH * 2) {
         u64 masked = metadata->bitmap[1] | get_mask(slots - U64_WIDTH);
-        return metadata->bitmap[0] != ~0UL || masked != ~0UL;
+        return metadata->bitmap[0] != ~0ULL || masked != ~0ULL;
     }
     if (slots <= U64_WIDTH * 3) {
         u64 masked = metadata->bitmap[2] | get_mask(slots - U64_WIDTH * 2);
-        return metadata->bitmap[0] != ~0UL || metadata->bitmap[1] != ~0UL || masked != ~0UL;
+        return metadata->bitmap[0] != ~0ULL || metadata->bitmap[1] != ~0ULL || masked != ~0ULL;
     }
     u64 masked = metadata->bitmap[3] | get_mask(slots - U64_WIDTH * 3);
-    return metadata->bitmap[0] != ~0UL || metadata->bitmap[1] != ~0UL || metadata->bitmap[2] != ~0UL || masked != ~0UL;
+    return metadata->bitmap[0] != ~0ULL || metadata->bitmap[1] != ~0ULL || metadata->bitmap[2] != ~0ULL || masked != ~0ULL;
 #endif
 }
 
@@ -955,6 +973,10 @@ struct region_metadata {
     void *p;
     size_t size;
     size_t guard_size;
+#ifdef _WIN32
+    // Maximum payload size that can be recommitted without acquiring adjacent address space.
+    size_t capacity;
+#endif
 };
 
 struct quarantine_info {
@@ -1009,9 +1031,34 @@ struct allocator_state {
     // padding until next page boundary for mprotect
     alignas(PAGE_SIZE) struct region_metadata regions_b[MAX_REGION_TABLE_SIZE];
     // padding until next page boundary for mprotect
+#ifdef _MSC_VER
+    // MSVC rejects array types larger than 2 GiB. The reservation still contains the full
+    // mapping sequence, represented as a C flexible-array tail.
+    struct slab_info_mapping slab_info_mapping[];
+#else
     struct slab_info_mapping slab_info_mapping[N_ARENA][N_SIZE_CLASSES];
+#endif
     // padding until next page boundary for mprotect
 };
+
+static size_t allocator_state_size(void) {
+#ifdef _MSC_VER
+    return offsetof(struct allocator_state, slab_info_mapping) +
+        (size_t)N_ARENA * N_SIZE_CLASSES * sizeof(struct slab_info_mapping);
+#else
+    return sizeof(struct allocator_state);
+#endif
+}
+
+static struct slab_metadata *get_slab_info_mapping(struct allocator_state *allocator_state,
+        unsigned arena, unsigned class) {
+#ifdef _MSC_VER
+    size_t index = (size_t)arena * N_SIZE_CLASSES + class;
+    return allocator_state->slab_info_mapping[index].slab_info;
+#else
+    return allocator_state->slab_info_mapping[arena][class].slab_info;
+#endif
+}
 
 static void regions_quarantine_deallocate_pages(void *p, size_t size, size_t guard_size) {
     if (!REGION_QUARANTINE || size >= REGION_QUARANTINE_SKIP_THRESHOLD) {
@@ -1124,6 +1171,9 @@ static bool regions_insert(void *p, size_t size, size_t guard_size) {
     ra->regions[index].p = p;
     ra->regions[index].size = size;
     ra->regions[index].guard_size = guard_size;
+#ifdef _WIN32
+    ra->regions[index].capacity = size;
+#endif
     ra->free--;
     return false;
 }
@@ -1195,6 +1245,7 @@ static inline void thread_seal_metadata(void) {
 #endif
 }
 
+#ifndef _WIN32
 static void full_lock(void) {
     thread_unseal_metadata();
     mutex_lock(&ro.region_allocator->lock);
@@ -1231,6 +1282,7 @@ static void post_fork_child(void) {
     }
     thread_seal_metadata();
 }
+#endif
 
 static inline bool is_init(void) {
     return get_slab_region_end() != NULL;
@@ -1271,7 +1323,7 @@ COLD static void init_slow_path(void) {
         (get_random_u64_uniform(rng, REAL_CLASS_REGION_SIZE / PAGE_SIZE) + 1) * PAGE_SIZE;
 
     struct allocator_state *allocator_state =
-        allocate_pages(sizeof(struct allocator_state), metadata_guard_size, false, "malloc allocator_state");
+        allocate_pages(allocator_state_size(), metadata_guard_size, false, "malloc allocator_state");
     if (unlikely(allocator_state == NULL)) {
         fatal_error("failed to reserve allocator state");
     }
@@ -1321,7 +1373,7 @@ COLD static void init_slow_path(void) {
             c->slab_size = get_slab_size(c->slots, size);
             c->size_divisor = libdivide_u32_gen(size);
             c->slab_size_divisor = libdivide_u64_gen(c->slab_size);
-            c->slab_info = allocator_state->slab_info_mapping[arena][class].slab_info;
+            c->slab_info = get_slab_info_mapping(allocator_state, arena, class);
         }
     }
 
@@ -1336,19 +1388,32 @@ COLD static void init_slow_path(void) {
 
     mutex_unlock(&init_lock);
 
+#ifndef _WIN32
     // may allocate, so wait until the allocator is initialized to avoid deadlocking
     if (unlikely(pthread_atfork(full_lock, full_unlock, post_fork_child))) {
         fatal_error("pthread_atfork failed");
     }
+#endif
 }
 
 static inline unsigned init(void) {
-    unsigned arena = thread_arena;
 #if N_ARENA > 1
+#ifdef _WIN32
+    unsigned arena = get_thread_arena();
+    if (likely(arena < N_ARENA)) {
+        return arena;
+    }
+    arena = atomic_fetch_add_explicit(&thread_arena_counter, 1, memory_order_relaxed) % N_ARENA;
+    set_thread_arena(arena);
+#else
+    unsigned arena = thread_arena;
     if (likely(arena < N_ARENA)) {
         return arena;
     }
     thread_arena = arena = thread_arena_counter++ % N_ARENA;
+#endif
+#else
+    unsigned arena = 0;
 #endif
     if (unlikely(!is_init())) {
         init_slow_path();
@@ -1356,7 +1421,7 @@ static inline unsigned init(void) {
     return arena;
 }
 
-#if CONFIG_SELF_INIT
+#if CONFIG_SELF_INIT && !defined(_WIN32)
 // trigger early initialization to set up pthread_atfork and protect state as soon as possible
 COLD __attribute__((constructor(101), used)) static void trigger_early_init(void) {
     init();
@@ -1585,6 +1650,9 @@ EXPORT void *h_realloc(void *old, size_t size) {
         }
         old_size = region->size;
         size_t old_guard_size = region->guard_size;
+#ifdef _WIN32
+        size_t old_capacity = region->capacity;
+#endif
         if (old_size == size) {
             mutex_unlock(&ra->lock);
             thread_seal_metadata();
@@ -1593,6 +1661,31 @@ EXPORT void *h_realloc(void *old, size_t size) {
         mutex_unlock(&ra->lock);
 
         if (size > max_slab_size_class) {
+#ifdef _WIN32
+            enum windows_resize_result resize_result = windows_try_resize_large(old, old_size,
+                size, old_guard_size, old_capacity);
+            if (resize_result == WINDOWS_RESIZE_ERROR) {
+                thread_seal_metadata();
+                return NULL;
+            }
+            if (resize_result == WINDOWS_RESIZE_DONE) {
+                mutex_lock(&ra->lock);
+                struct region_metadata *region = regions_find(old);
+                if (unlikely(region == NULL)) {
+                    fatal_error("invalid realloc");
+                }
+                region->size = size;
+                if (size < old_size) {
+                    stats_large_deallocate(ra, old_size - size);
+                } else {
+                    stats_large_allocate(ra, size - old_size);
+                }
+                mutex_unlock(&ra->lock);
+
+                thread_seal_metadata();
+                return old;
+            }
+#else
             // in-place shrink
             if (size < old_size) {
                 void *new_end = (char *)old + size;
@@ -1670,6 +1763,7 @@ EXPORT void *h_realloc(void *old, size_t size) {
                 return new;
             }
 #endif
+#endif
         }
     }
 
@@ -1709,7 +1803,9 @@ EXPORT void *h_aligned_alloc(size_t alignment, size_t size) {
     return alloc_aligned_simple(alignment, size);
 }
 
+#ifndef _WIN32
 EXPORT void *h_memalign(size_t alignment, size_t size) ALIAS(h_aligned_alloc);
+#endif
 
 #ifndef __ANDROID__
 EXPORT void *h_valloc(size_t size) {
@@ -2103,7 +2199,7 @@ EXPORT struct mallinfo h_mallinfo(void) {
 }
 #endif
 
-#ifndef __ANDROID__
+#if !defined(__ANDROID__) && !defined(_WIN32)
 EXPORT int h_malloc_info(int options, FILE *fp) {
     if (options) {
         errno = EINVAL;

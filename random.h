@@ -14,6 +14,9 @@ struct random_state {
     u8 cache[RANDOM_CACHE_SIZE];
 };
 
+// Implemented by the selected operating-system entropy provider.
+void get_random_seed(void *buf, size_t size);
+
 void random_state_init(struct random_state *state);
 void random_state_init_from_random_state(struct random_state *state, struct random_state *source);
 void get_random_bytes(struct random_state *state, void *buf, size_t size);

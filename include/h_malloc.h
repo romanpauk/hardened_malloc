@@ -5,6 +5,11 @@
 
 #include <malloc.h>
 
+#if defined(_MSC_VER) && !defined(__clang__) && !defined(__attribute__)
+#define __attribute__(x)
+#define H_MALLOC_UNDEFINE_ATTRIBUTE
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -93,6 +98,8 @@ __attribute__((malloc)) void *h_pvalloc(size_t size);
 void h_cfree(void *ptr) __THROW;
 void *h_malloc_get_state(void);
 int h_malloc_set_state(void *state);
+#elif defined(_WIN32)
+void h_cfree(void *ptr);
 #endif
 
 // Android extensions
@@ -131,6 +138,11 @@ void h_free_aligned_sized(void *p, size_t alignment, size_t expected_size);
 
 #ifdef __cplusplus
 }
+#endif
+
+#ifdef H_MALLOC_UNDEFINE_ATTRIBUTE
+#undef __attribute__
+#undef H_MALLOC_UNDEFINE_ATTRIBUTE
 #endif
 
 #endif

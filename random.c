@@ -5,9 +5,10 @@
 #include "random.h"
 #include "util.h"
 
+#ifndef _WIN32
 #include <sys/random.h>
 
-static void get_random_seed(void *buf, size_t size) {
+void get_random_seed(void *buf, size_t size) {
     while (size) {
         ssize_t r;
 
@@ -23,6 +24,7 @@ static void get_random_seed(void *buf, size_t size) {
         size -= r;
     }
 }
+#endif
 
 void random_state_init(struct random_state *state) {
     u8 rnd[CHACHA_KEY_SIZE + CHACHA_IV_SIZE];
@@ -141,6 +143,17 @@ u64 get_random_u64(struct random_state *state) {
 
 // See Fast Random Integer Generation in an Interval by Daniel Lemire
 u64 get_random_u64_uniform(struct random_state *state, u64 bound) {
+#if defined(_MSC_VER)
+    u64 high;
+    u64 leftover = msvc_multiply_u64(get_random_u64(state), bound, &high);
+    if (leftover < bound) {
+        u64 threshold = -bound % bound;
+        while (leftover < threshold) {
+            leftover = msvc_multiply_u64(get_random_u64(state), bound, &high);
+        }
+    }
+    return high;
+#else
     u128 random = get_random_u64(state);
     u128 multiresult = random * bound;
     u64 leftover = multiresult;
@@ -153,4 +166,5 @@ u64 get_random_u64_uniform(struct random_state *state, u64 bound) {
         }
     }
     return multiresult >> 64;
+#endif
 }
